@@ -1786,6 +1786,101 @@ class Cube(HDFCube):
         if mean:
             sframe /= np.sum(filter_function.project(orb.core.Axis(self.params.base_axis.astype(float))).data)
         return sframe
+    
+
+    def integrate_Nancy_version(self, filter_axis, filter_transmission, xmin=None, xmax=None, ymin=None, ymax=None, split=100,
+                  mean=True, square_filter=False): # edited by NANCY (well, Guy really!)
+        """Integrate a cube under a filter function and generate an image
+
+        :param filter_axis: must be in cm1 in decreasing order
+
+        :param filter_transmission: transmission of the filter
+
+        :param xmin: (Optional) lower boundary of the ROI along x axis (default
+          None, i.e. min)
+
+        :param xmax: (Optional) lower boundary of the ROI along y axis (default
+          None, i.e. min)
+
+        :param ymin: (Optional) upper boundary of the ROI along x axis (default
+          None, i.e. max)
+
+        :param ymax: (Optional) upper boundary of the ROI along y axis (default None, i.e. max)
+        
+        """
+        #### First we need to find the indices of the filter passband in the cube band
+        start = np.argmax(filter_transmission > 0.05) # finds indices between which the filter transmits more than 5%
+        end = np.argmin(filter_transmission[start:] > 0.05) + start
+
+        if (filter_axis[start] <= self.params.base_axis[0] #check if the filter is contained within the cube band
+            or filter_axis[end] >= self.params.base_axis[-1]):
+            raise ValueError(
+                'filter passband (>5%) between {} - {} out of cube band {} - {}'.format(
+                    filter_axis[start],
+                    filter_axis[end],
+                    self.params.base_axis[0],
+                    self.params.base_axis[-1]))
+        
+        start_pix, end_pix = orb.utils.spectrum.cm12pix( #finds the corresponding 'pixels' in the SN2 cube, the indices for the base axis
+            self.params.base_axis, [filter_axis[start], filter_axis[end]]).astype(int) #this rounds cm1 to the nearest integer
+
+        #### in case we're only integrating over part of the FOV:
+        if xmin is None: xmin = 0
+        if ymin is None: ymin = 0
+        if xmax is None: xmax = self.dimx
+        if ymax is None: ymax = self.dimy
+
+        xmin = int(np.clip(xmin, 0, self.dimx))
+        xmax = int(np.clip(xmax, 0, self.dimx))
+        ymin = int(np.clip(ymin, 0, self.dimy))
+        ymax = int(np.clip(ymax, 0, self.dimy))
+
+        #### INITIALIZATION OF THE SUMMED FRAME
+        sframe = np.zeros((self.dimx, self.dimy), dtype=np.complex128) 
+        zsize = np.abs(end_pix - start_pix) + 1     # zsize=22 for SN2 and F502N
+        izranges = (np.arange(start_pix, end_pix+1),) # make array of indices from start_pix to end_pix+1
+        progress = orb.core.ProgressBar(len(izranges)) # initialise the progress bar
+        _index = 0
+
+        for izrange in izranges: #len(izranges) = 22 for SN2 and F502N, so per relevant frame of the SN2 cube
+            print(izrange)
+            progress.update(_index)
+            
+            axis_onrange = orb.core.Axis(self.params.base_axis[izrange].astype(float)) # cm1 axis for part of the F502N filter
+            filter_onrange = orb.utils.spectrum.project(filter_transmission, filter_axis, axis_onrange, 3) # corresponding transmission of the F502N at positions of the cubes slices, but interpolated a little to match spectral resolution
+            print('filter onrange: ', filter_onrange)
+            filter_onrange = filter_onrange.astype(np.complex128)
+            filter_onrange.imag = filter_onrange.real #set imaginary part to the same as the real one
+            progress.update(_index, info='loading data')
+            
+        #### Extract data from the SN2 cube over the 22 slices
+            idata = self.get_data(
+                xmin, xmax, ymin, ymax,
+                izrange.min(), izrange.max()+1, silent=True).astype(np.complex128)
+            progress.update(_index, info='data loaded')
+            print('idata shape:', idata.shape)
+
+        #### INTEGRATION
+            if not square_filter: 
+                # sframe[xmin:xmax, ymin:ymax] += np.sum(
+                #     idata 
+                #     * filter_onrange, axis=2).astype(np.complex128) 
+                
+                ### I commented out the original line, where the only difference is the += instead of =
+                sframe[xmin:xmax, ymin:ymax] = np.sum(
+                    idata #multiply the data by the filter transmission and sum over the 22 slices
+                    * filter_onrange, axis=2).astype(np.complex128) 
+            else:
+                sframe[xmin:xmax, ymin:ymax] += np.sum(
+                    idata, axis=2).astype(np.complex128)
+
+            _index += 1
+        progress.end()
+        if mean:
+            divide = np.sum(filter_onrange.real)
+            sframe /= divide
+            print(divide)
+        return sframe
         
 #################################################
 #### CLASS InteferogramCube #####################
